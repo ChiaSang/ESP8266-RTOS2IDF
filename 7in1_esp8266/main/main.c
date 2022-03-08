@@ -1,14 +1,16 @@
-#include <string.h>
-#include <stdlib.h>
+#include <stdio.h>
 #include "wifi_smartconfig.h"
 #include "sntp_systime.h"
+#include "app_mqtt_code.h"
 
 static const char *TAG = "app";
 
 void app_main()
 {
+
     // nvs_flash_erase();
     initialise_wifi_smartconfig();
+    initial_sntp();
 
     /*
         ESP_RST_UNKNOWN = 0,   Reset reason can not be determined
@@ -23,7 +25,10 @@ void app_main()
             ESP_RST_BROWNOUT,  Brownout reset (software or hardware)
             ESP_RST_SDIO,      Reset over SDIO
     */
+
     esp_reset_reason_t reason = esp_reset_reason();
     ESP_LOGI(TAG, "Reset Reason : %X", reason);
-    initial_sntp();
+
+    oneNET_connect_msg_t oneNET_connect_msg;
+    app_open_mqtt_connection(&oneNET_connect_msg);
 }
