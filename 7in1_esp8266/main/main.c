@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "wifi_smartconfig.h"
 #include "sntp_systime.h"
 #include "app_mqtt_code.h"
@@ -7,28 +9,12 @@ static const char *TAG = "app";
 
 void app_main()
 {
-
     // nvs_flash_erase();
     initialise_wifi_smartconfig();
     initial_sntp();
 
-    /*
-        ESP_RST_UNKNOWN = 0,   Reset reason can not be determined
-            ESP_RST_POWERON,   Reset due to power-on event 电源复位
-            ESP_RST_EXT,       Reset by external pin (not applicable for ESP8266)
-            ESP_RST_SW,        Software reset via esp_restart 代码调用esp_restart()方法复位
-            ESP_RST_PANIC,     Software reset due to exception/panic 代码异常
-            ESP_RST_INT_WDT,   Reset (software or hardware) due to interrupt watchdog 软件或硬件中断异常导致看门狗
-            ESP_RST_TASK_WDT,  Reset due to task watchdog 任务超时导致看门狗复位
-            ESP_RST_WDT,       Reset due to other watchdogs 其他看门狗
-            ESP_RST_DEEPSLEEP, Reset after exiting deep sleep mode 睡眠模式唤醒导致
-            ESP_RST_BROWNOUT,  Brownout reset (software or hardware)
-            ESP_RST_SDIO,      Reset over SDIO
-    */
-
     esp_reset_reason_t reason = esp_reset_reason();
     ESP_LOGI(TAG, "Reset Reason : %X", reason);
 
-    oneNET_connect_msg_t oneNET_connect_msg;
-    app_open_mqtt_connection(&oneNET_connect_msg);
+    app_start();
 }
