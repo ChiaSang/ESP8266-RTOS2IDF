@@ -3,13 +3,17 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "mqtt_client.h"
-#include "app_mqtt_code.h"
 #include "driver/uart.h"
 #include "cJSON.h"
 #include "math.h"
+#include "lwip/sockets.h"
+#include "lwip/dns.h"
+#include "lwip/netdb.h"
+#include "app_mqtt_code.h"
 
 static char *TAG = "onenet";
 static oneNET_connect_msg_t *oneNET_connect_msg_static;
@@ -108,6 +112,17 @@ char *packet_json(sensor_7in1_t *s7in1)
 
 static void uart_event_task(void *pvParameters)
 {
+    uart_config_t uart_config = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
+    uart_param_config(UART_NUM_0, &uart_config);
+
+    // Install UART driver, and get the queue.
+    uart_driver_install(UART_NUM_0, BUF_SIZE * 2, BUF_SIZE * 2, 100, &uart0_queue, 0);
+
     uart_event_t event;
     uint8_t *dtmp = (uint8_t *)malloc(RD_BUF_SIZE);
 
@@ -124,20 +139,21 @@ static void uart_event_task(void *pvParameters)
             // We'd better handler data event fast, there would be much more data events than
             // other types of events. If we take too much time on data event, the queue might be full.
             case UART_DATA:
-                ESP_LOGI(TAG, "[UART DATA]: %d", event.size);
+                ESP_LOGI(TAG, "[UART DATA SIZE]: %d", event.size);
                 int len = uart_read_bytes(EX_UART_NUM, dtmp, event.size, portMAX_DELAY);
-                // 打印原始16进制数据
-                int i = 0;
-                dtmp[len] = 0;
-                char sensor_hex_str[64] = "";
-                while (i < len)
-                {
-                    char hex_data[4];
-                    sprintf(hex_data, "%02X", dtmp[i]);
-                    strcat(sensor_hex_str, hex_data);
-                    i += 1;
-                }
-                ESP_LOGI(TAG, "initial data: %s", sensor_hex_str);
+
+                /* print initial data*/
+                // int i = 0;
+                // dtmp[len] = 0;
+                // char sensor_hex_str[64] = "";
+                // while (i < len)
+                // {
+                //     char hex_data[4];
+                //     sprintf(hex_data, "%02X", dtmp[i]);
+                //     strcat(sensor_hex_str, hex_data);
+                //     i += 1;
+                // }
+                // ESP_LOGI(TAG, "initial data: %s", sensor_hex_str);
                 parse_7in1_str(&s7in1, dtmp, len);
                 break;
 
@@ -182,20 +198,6 @@ static void uart_event_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-void initUart(void)
-{
-    uart_config_t uart_config = {
-        .baud_rate = 9600,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
-    uart_param_config(UART_NUM_0, &uart_config);
-
-    // Install UART driver, and get the queue.
-    uart_driver_install(UART_NUM_0, BUF_SIZE * 2, BUF_SIZE * 2, 100, &uart0_queue, 0);
-}
-
 /**
  * @brief oneNET_publish
  *          定时上传属性任务
@@ -210,27 +212,21 @@ void oneNET_publish(esp_mqtt_client_handle_t client, int period)
     while (1)
     {
         device_property = packet_json(&s7in1);
-        ESP_LOGI(TAG, "up: --> %s", device_property);
-        esp_mqtt_client_publish(client, topic, device_property, strlen(device_property), 1, 0);
-        memset(device_property, 0, sizeof(*device_property));
+        ESP_LOGI(TAG, "topic: %s", topic);
+        // ESP_LOGI(TAG, "up: --> %s", device_property);
+        esp_mqtt_client_publish(client, topic, device_property, strlen(device_property), 0, 0);
+        // memset(device_property, 0, sizeof(*device_property));
+        ESP_LOGI(TAG, "[ESP] Free memory: %d bytes", esp_get_free_heap_size());
         vTaskDelay(period / portTICK_PERIOD_MS);
     }
 }
 
-/**
- * @brief mqtt 事件处理函数
- *
- * @param event
- * @return esp_err_t
- */
 static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
-
-    static int post_sub_id = 0;  // 订阅post主题的消息ID
-    static int get_sub_id = 0;   // 订阅set主题的消息ID
-    static int event_sub_id = 0; // 订阅event主题的消息ID
-
+    int post_sub_id = 0; // 订阅post主题的消息ID
+    int set_sub_id = 0;  // 订阅set主题的消息ID
+    int get_sub_id = 0;  // 订阅gett主题的消息ID
     // your_context_t *context = event->context;
     switch (event->event_id)
     {
@@ -241,29 +237,30 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
         memset(dev_property_topic, 0, 128);
         sprintf(dev_property_topic, "$sys/%s/%s/thing/property/post/reply", oneNET_connect_msg_static->produt_id, oneNET_connect_msg_static->device_name);
         post_sub_id = esp_mqtt_client_subscribe(client, dev_property_topic, 1);
+        ESP_LOGI(TAG, "property/post subscribe successful, msg_id=%d", post_sub_id);
         //设备属性设置Topic
         memset(dev_property_topic, 0, 128);
         sprintf(dev_property_topic, "$sys/%s/%s/thing/property/set", oneNET_connect_msg_static->produt_id, oneNET_connect_msg_static->device_name);
-        event_sub_id = esp_mqtt_client_subscribe(client, dev_property_topic, 1);
+        set_sub_id = esp_mqtt_client_subscribe(client, dev_property_topic, 1);
+        ESP_LOGI(TAG, "property/set subscribe successful, msg_id=%d", set_sub_id);
         //云平台主动获取属性 Topic
         memset(dev_property_topic, 0, 128);
         sprintf(dev_property_topic, "$sys/%s/%s/thing/property/get", oneNET_connect_msg_static->produt_id, oneNET_connect_msg_static->device_name);
         get_sub_id = esp_mqtt_client_subscribe(client, dev_property_topic, 1);
-        //订阅OTA opic
-        memset(dev_property_topic, 0, 128);
-        sprintf(dev_property_topic, "ota/%s/%s/thing/property/get", oneNET_connect_msg_static->produt_id, oneNET_connect_msg_static->device_name);
-        esp_mqtt_client_subscribe(client, dev_property_topic, 1);
+        ESP_LOGI(TAG, "property/get subscribe successful, msg_id=%d", get_sub_id);
+
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
         break;
+
     case MQTT_EVENT_SUBSCRIBED:
         ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
         if (event->msg_id == post_sub_id)
         {
             bit_sub_post = 1;
         }
-        else if (event->msg_id == event_sub_id)
+        else if (event->msg_id == set_sub_id)
         {
             bit_sub_event = 1;
         }
@@ -279,10 +276,12 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
         ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
         break;
     case MQTT_EVENT_DATA:
-        ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-        ESP_LOGI(TAG, "down: <-- \"%.*s\", num = %d", event->data_len, event->data, event->data_len);
-        ESP_LOGI(TAG, "topic: \"%.*s\"", event->topic_len, event->topic);
+    {
+        // ESP_LOGI(TAG, "MQTT_EVENT_DATA");
+        // ESP_LOGI(TAG, "topic:%.*s\r\n", event->topic_len, event->topic);
+        ESP_LOGI(TAG, "post/reply:%s", event->data);
         break;
+    }
     case MQTT_EVENT_ERROR:
         ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
         break;
@@ -293,41 +292,35 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
     return ESP_OK;
 }
 
-void mqtt_event_handler(void *handler_pvParameterss, esp_event_base_t base, int32_t event_id, void *event_data)
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
     mqtt_event_handler_cb(event_data);
 }
 
-/**
- * @brief 启动连接 oneNET
- *
- * @return esp_err_t
- */
-esp_err_t app_open_mqtt_connection(oneNET_connect_msg_t *oneNET_connect_msg)
+void mqtt_task(void *pvParameters)
 {
-    onenet_connect_msg_init(oneNET_connect_msg, ONENET_METHOD_MD5);
-    oneNET_connect_msg_static = oneNET_connect_msg;
-    esp_mqtt_client_config_t oneNET_client_cfg = {
+    onenet_connect_msg_init(&oneNET_connect_msg, ONENET_METHOD_MD5);
+    oneNET_connect_msg_static = &oneNET_connect_msg;
+    esp_mqtt_client_config_t mqtt_cfg = {
         .host = ONENET_HOST,
         .port = ONENET_PORT,
-        .client_id = oneNET_connect_msg->device_name,
-        .username = oneNET_connect_msg->produt_id,
-        .password = oneNET_connect_msg->token,
+        .client_id = oneNET_connect_msg.device_name,
+        .username = oneNET_connect_msg.produt_id,
+        .password = oneNET_connect_msg.token,
     };
 
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&oneNET_client_cfg);
+    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, client);
     esp_mqtt_client_start(client);
-
-    oneNET_publish(client, 5000);
-
-    return ESP_OK;
+    oneNET_publish(client, 1000);
 }
 
 void app_start(void)
 {
-    initUart();
+    ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "[APP] IDF version: %s", esp_get_idf_version());
+
     xTaskCreate(uart_event_task, "uart_event_task", 2048, NULL, 12, NULL);
-    app_open_mqtt_connection(&oneNET_connect_msg);
+    xTaskCreate(mqtt_task, "mqtt_task", 4096, NULL, 2, NULL);
 }
