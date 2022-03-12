@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -29,6 +30,7 @@ bool bit_sub_event; // set主题订阅成功标志位。0-未订阅；1-订阅�
 bool bit_sub_get;   // set主题订阅成功标志位。0-未订阅；1-订阅成功。
 
 static QueueHandle_t uart0_queue;
+static QueueHandle_t uart1_queue;
 
 oneNET_connect_msg_t oneNET_connect_msg;
 
@@ -36,28 +38,13 @@ sensor_7in1_t s7in1;
 
 void parse_7in1_str(sensor_7in1_t *s7in1, uint8_t *arr, int len)
 {
-    if (sizeof(s7in1))
-    {
-        s7in1->CO2 = arr[2] * 256 + arr[3];
-        s7in1->CH2O = arr[4] * 256 + arr[5];
-        s7in1->TVOC = arr[6] * 256 + arr[7];
-        s7in1->PM25 = arr[8] * 256 + arr[9];
-        s7in1->PM10 = arr[10] * 256 + arr[11];
-        s7in1->Temp = arr[12] + arr[13] * 0.1;
-        s7in1->Humi = arr[14] + arr[15] * 0.1;
-    }
-    else
-    {
-        s7in1->CH2O = 0;
-        s7in1->CO2 = 0;
-        s7in1->TVOC = 0;
-        s7in1->PM10 = 0;
-        s7in1->PM25 = 0;
-        s7in1->Temp = 0.0;
-        s7in1->Humi = 0.0;
-    }
-
-    // ESP_LOGI(TAG, "CO2: %d CH2O : %d TVOC : %d PM25 : %d PM10 : %d Temp : %.2f Humi : %.2f", s7in1->CO2, s7in1->CH2O, s7in1->TVOC, s7in1->PM25, s7in1->PM10, s7in1->Temp, s7in1->Humi);
+    s7in1->CO2 = arr[2] * 256 + arr[3];
+    s7in1->CH2O = arr[4] * 256 + arr[5];
+    s7in1->TVOC = arr[6] * 256 + arr[7];
+    s7in1->PM25 = arr[8] * 256 + arr[9];
+    s7in1->PM10 = arr[10] * 256 + arr[11];
+    s7in1->Temp = arr[12] + arr[13] * 0.1;
+    s7in1->Humi = arr[14] + arr[15] * 0.1;
 }
 
 char *packet_json(sensor_7in1_t *s7in1)
@@ -122,6 +109,17 @@ static void uart_event_task(void *pvParameters)
     // Install UART driver, and get the queue.
     uart_driver_install(UART_NUM_0, BUF_SIZE * 2, BUF_SIZE * 2, 100, &uart0_queue, 0);
 
+    uart_config_t uart1_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
+    uart_param_config(UART_NUM_1, &uart1_config);
+
+    // Install UART driver, and get the queue.
+    uart_driver_install(UART_NUM_1, BUF_SIZE * 2, BUF_SIZE * 2, 100, &uart1_queue, 0);
+
     uart_event_t event;
     uint8_t *dtmp = (uint8_t *)malloc(RD_BUF_SIZE);
 
@@ -153,7 +151,20 @@ static void uart_event_task(void *pvParameters)
                 //     i += 1;
                 // }
                 // ESP_LOGI(TAG, "initial data: %s", sensor_hex_str);
-                parse_7in1_str(&s7in1, dtmp, len);
+                if (len)
+                {
+                    parse_7in1_str(&s7in1, dtmp, len);
+                }
+                else
+                {
+                    s7in1.CH2O = 0;
+                    s7in1.CO2 = 0;
+                    s7in1.TVOC = 0;
+                    s7in1.PM10 = 0;
+                    s7in1.PM25 = 0;
+                    s7in1.Temp = 0.0;
+                    s7in1.Humi = 0.0;
+                }
                 break;
 
             // Event of HW FIFO overflow detected
@@ -216,8 +227,9 @@ void oneNET_publish(esp_mqtt_client_handle_t client, int period)
         // ESP_LOGI(TAG, "up: --> %s", device_property);
         esp_mqtt_client_publish(client, topic, payload, 0, 0, 0);
         cJSON_free((void *)payload);
-        vTaskDelay(period / portTICK_PERIOD_MS);
         ESP_LOGI(TAG, "[ESP] Free memory: %d bytes", esp_get_free_heap_size());
+        memset(&s7in1, 0, sizeof(s7in1));
+        vTaskDelay(period / portTICK_PERIOD_MS);
     }
 }
 
@@ -277,9 +289,7 @@ static esp_err_t mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
         break;
     case MQTT_EVENT_DATA:
     {
-        // ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-        // ESP_LOGI(TAG, "topic:%.*s\r\n", event->topic_len, event->topic);
-        ESP_LOGI(TAG, "post/reply:%s", event->data);
+        ESP_LOGI(TAG, "down: <-- \"%.*s\", num = %d", event->data_len, event->data, event->data_len);
         break;
     }
     case MQTT_EVENT_ERROR:
