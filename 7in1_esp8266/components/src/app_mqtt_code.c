@@ -103,11 +103,10 @@ char *packet_json(sensor_7in1_t *s7in1)
     cJSON_AddItemToObject(pParams, "RelativeHumidity", pRH);
     cJSON_AddNumberToObject(pRH, "value", s7in1->Humi);
 
-    char *sendData = cJSON_PrintUnformatted(pRoot);
-    memset(packet_id, 0, sizeof(packet_id));
-    // ESP_LOGI(TAG, "up: --> %s", sendData);
-    cJSON_Delete(pRoot); // 释放cJSON_CreateObject ()分配出来的内存空间
-    return sendData;
+    char *payload = cJSON_PrintUnformatted(pRoot); // 未格式化的，原文
+    // cJSON_free((void *) payload); // 释放cJSON_Print ()分配的内存
+    cJSON_Delete(pRoot); // 释放cJSON_CreateObject ()分配的内存
+    return payload;      // 返回json字符串指针。【注意】：使用此函数过后，请务必释放返回指针的内存，以避免重复调用造成内存溢出
 }
 
 static void uart_event_task(void *pvParameters)
@@ -191,6 +190,7 @@ static void uart_event_task(void *pvParameters)
                 break;
             }
         }
+        ESP_LOGI(TAG, "[ESP] Free memory: %d bytes", esp_get_free_heap_size());
     }
 
     free(dtmp);
@@ -207,17 +207,17 @@ static void uart_event_task(void *pvParameters)
 void oneNET_publish(esp_mqtt_client_handle_t client, int period)
 {
     char topic[128] = {0};
-    char *device_property;
     sprintf(topic, "$sys/%s/%s/thing/property/post", oneNET_connect_msg_static->produt_id, oneNET_connect_msg_static->device_name);
     while (1)
     {
-        device_property = packet_json(&s7in1);
+        char *payload;
+        payload = packet_json(&s7in1);
         ESP_LOGI(TAG, "topic: %s", topic);
         // ESP_LOGI(TAG, "up: --> %s", device_property);
-        esp_mqtt_client_publish(client, topic, device_property, strlen(device_property), 0, 0);
-        // memset(device_property, 0, sizeof(*device_property));
-        ESP_LOGI(TAG, "[ESP] Free memory: %d bytes", esp_get_free_heap_size());
+        esp_mqtt_client_publish(client, topic, payload, 0, 0, 0);
+        cJSON_free((void *)payload);
         vTaskDelay(period / portTICK_PERIOD_MS);
+        ESP_LOGI(TAG, "[ESP] Free memory: %d bytes", esp_get_free_heap_size());
     }
 }
 
@@ -313,7 +313,7 @@ void mqtt_task(void *pvParameters)
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, client);
     esp_mqtt_client_start(client);
-    oneNET_publish(client, 1000);
+    oneNET_publish(client, 2000);
 }
 
 void app_start(void)
